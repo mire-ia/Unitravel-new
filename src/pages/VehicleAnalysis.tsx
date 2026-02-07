@@ -87,17 +87,45 @@ const VehicleAnalysis: React.FC = () => {
         return /^\d{8,}/.test(concept.trim());
     };
 
+    // Función para parsear amount de forma robusta (soporta formato europeo e.g. "1.234.567,89")
+    const parseAmount = (value: any): number => {
+        if (typeof value === 'number') return value;
+        if (!value || typeof value !== 'string') return 0;
+        const cleaned = value.trim();
+        if (/^\-?\d{1,3}(\.\d{3})*(,\d+)?$/.test(cleaned)) {
+            return parseFloat(cleaned.replace(/\./g, '').replace(',', '.')) || 0;
+        }
+        return Number(cleaned) || 0;
+    };
+
     // Cruzar FinancialData (PyG) con CostClassifications
     const costsWithClassification = useMemo(() => {
         // Solo cuentas contables reales y solo gastos (importe negativo)
-        const pygData = financialData.filter(d => 
+        const allPygData = financialData.filter(d => 
             d.documentType === 'PyG' && 
             isAccountCode(d.concept) && 
-            Number(d.amount) < 0
+            parseAmount(d.amount) < 0
         );
+
+        // Dedup: preferir month=0 (anual) sobre mensuales para evitar duplicación
+        const yearMonths: Record<number, Set<number>> = {};
+        allPygData.forEach(d => {
+            const year = Number(d.year);
+            if (!yearMonths[year]) yearMonths[year] = new Set();
+            yearMonths[year].add(Number(d.month) || 0);
+        });
+
+        const pygData = allPygData.filter(d => {
+            const year = Number(d.year);
+            const month = Number(d.month) || 0;
+            const hasAnnual = yearMonths[year]?.has(0);
+            if (hasAnnual) return month === 0;
+            return month >= 1 && month <= 12;
+        });
+
         return pygData.map(item => {
             const classification = findClassification(item.concept);
-            const amount = Math.abs(Number(item.amount) || 0);
+            const amount = Math.abs(parseAmount(item.amount));
             return {
                 year: Number(item.year),
                 concept: item.concept,

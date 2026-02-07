@@ -106,27 +106,49 @@ const CostAnalysis: React.FC<CostAnalysisProps> = ({ studyDate }) => {
         return /^\d{8,}/.test(concept.trim());
     };
 
+    // Función para parsear amount de forma robusta (soporta formato europeo e.g. "1.234.567,89")
+    const parseAmount = (value: any): number => {
+        if (typeof value === 'number') return value;
+        if (!value || typeof value !== 'string') return 0;
+        const cleaned = value.trim();
+        // Si tiene coma como decimal y puntos como miles → formato europeo
+        if (/^\-?\d{1,3}(\.\d{3})*(,\d+)?$/.test(cleaned)) {
+            return parseFloat(cleaned.replace(/\./g, '').replace(',', '.')) || 0;
+        }
+        return Number(cleaned) || 0;
+    };
+
     // Cruzar FinancialData (PyG) con CostClassifications para obtener costes con su clasificación
     const { costsWithClassification, incomesFromPyG } = useMemo(() => {
         // Filtrar solo registros de PyG que sean cuentas contables reales
-        const pygData = financialData.filter(d => 
+        const allPygData = financialData.filter(d => 
             d.documentType === 'PyG' && isAccountCode(d.concept)
         );
         
+        // Agrupar por año para decidir qué datos usar
+        // Si hay datos con month=0 (anuales), usar solo esos para evitar duplicación con mensuales
+        const yearMonths: Record<number, Set<number>> = {};
+        allPygData.forEach(d => {
+            const year = Number(d.year);
+            if (!yearMonths[year]) yearMonths[year] = new Set();
+            yearMonths[year].add(Number(d.month) || 0);
+        });
+
+        const pygData = allPygData.filter(d => {
+            const year = Number(d.year);
+            const month = Number(d.month) || 0;
+            const hasAnnual = yearMonths[year]?.has(0);
+            // Si hay datos anuales (month=0), usar solo esos; si no, usar los mensuales
+            if (hasAnnual) return month === 0;
+            return month >= 1 && month <= 12;
+        });
+
         const costs: any[] = [];
         const incomes: any[] = [];
         
-        // DEBUG: Ver las primeras cuentas de ingresos
-        const ingresosCuentas = pygData.filter(item => item.concept.startsWith('7') && Number(item.amount) > 0);
-        console.log('DEBUG - Cuentas de ingresos (7xxx):', ingresosCuentas.slice(0, 5).map(i => ({
-            concept: i.concept,
-            amount: i.amount,
-            amountNumber: Number(i.amount)
-        })));
-        
         pygData.forEach(item => {
             const classification = findClassification(item.concept);
-            const rawAmount = Number(item.amount) || 0;
+            const rawAmount = parseAmount(item.amount);
             
             const record = {
                 year: Number(item.year),
@@ -148,8 +170,6 @@ const CostAnalysis: React.FC<CostAnalysisProps> = ({ studyDate }) => {
                 costs.push(record);
             }
         });
-        
-        console.log('DEBUG - Total ingresos calculado:', incomes.reduce((sum, i) => sum + i.amount, 0));
         
         return { costsWithClassification: costs, incomesFromPyG: incomes };
     }, [financialData, classifications]);
